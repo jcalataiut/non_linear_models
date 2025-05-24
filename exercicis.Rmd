@@ -1,0 +1,272 @@
+---
+title: "Ejercicios sobre Non-linear models"
+author: "Jose Calatayud Mateu"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+### Librerias
+library(knitr)
+library(tidyverse)
+library(nlme)
+library(msm)
+```
+
+
+# Exercise 1
+
+In biochemistry, the kinetic model of **Michaelis-Menten** is used to analyze enzyme kinetics. This model relates the **rate reaction** $v$ with the **substrate concentration** $S$ by means of the equation:
+
+$$
+v = \frac{\phi_1 S}{\phi_2 + S}
+$$
+
+where:
+- $\phi_1$ corresponds to the **maximum reaction rate** achieved by the system (saturating value),
+- $\phi_2$ (known as the **Michaelis constant**) corresponds to the concentration where the reaction rate is half of $\phi_1$.
+
+This parameter $\phi_2$ is highly relevant to biologists.
+
+  - Draw the theoretical curve for $\phi_1 = 3.5$ and $\phi_2 = 0.4$ over a range of concentration values between 0 and 5.
+
+```{r theoretical-curve}
+phi1 <- 3.5
+phi2 <- 0.4
+S <- seq(0, 5, by = 0.01)
+v <- (phi1 * S) / (phi2 + S)
+
+plot(S, v, type = "l", col = "blue", lwd = 2,
+     xlab = "Substrate concentration (S)",
+     ylab = "Reaction rate (v)",
+     main = "Michaelis-Menten Theoretical Curve")
+abline(h = phi1/2, lty = 2, col = "red")
+legend("bottomright", legend = c(expression("Curva teórica"), expression(phi[1]/2)), 
+       col = c("blue", "red"), lty = c(1, 2), lwd = 2)
+```
+
+  - The file `kinetics.txt` contains information from an experiment to estimate the concentration at which the reaction rate is half of its maximum. Use the Michaelis-Menten model to estimate this parameter and its 95% **confidence interval (CI)** (NOTE: Investigate whether there is any generic R function to automatically compute the CI).
+
+Del enuciado podemos deducir dos interpretaciones: 
+
+  - Que en el experimento han considerado que la reaction rate es un medio del máximo y, por tanto, como que $\phi_1$ es el máximo entonces ya es conocido y solo hace falta estimar $\phi_2$ que en esta situación debería de representar la concentración. 
+  
+  - Por otra parte, podemos suponer que desconocemos de los valores de $\phi_1$ y $\phi_2$ y, en consecunecia, hace falta estimarlos
+
+
+#### Suposición 1
+
+De acuerdo con el enunciado, vemos que la variable $\phi_2$, también llamada Michaelis constant, corresponde a la concentración cuando la reaction rate es un medio del máximo, $\phi_1$. Como los datos del experimento `kinetics.txt` contiene información de la reaction rate y de la saturación, tal y como se muestra a continuación:
+
+
+```{r}
+data <- read.table("kinetics.txt", header = TRUE)
+print(data)
+```
+
+Y como que lo que se pide és estimar la concentración, que és la Michaelis constant
+
+```{r}
+data.modif <- data
+data.modif$phi1 <- 2*data$v
+head(data.modif)
+```
+
+A partir del modelo **Michaelis-Menten** y del model no lineal, determinamos la estimación de la concentración $\phi_2$ y su IC($95\%$) como:
+
+```{r, warning=FALSE}
+model1 <- nls(v ~ (phi1 * S) / (phi2 + S),
+             data = data.modif,
+             start = list(phi2 = 0.5))
+
+summary(model1)
+ic1 <- confint(model1)  # 95% CI for the parameters
+```
+
+Así, en este cas el intervalo de confianza para $\phi_2$ és $[$`r ic1[1]`, `r ic1[2]`$]$.
+
+#### Suposición 2
+
+En cambio, ahora suponemos que no conocemos nada, és decir, que no interpretamos la reaction rate como un medio del máximo y no podemos suponer conocido $\phi_1$. Entonces:
+
+```{r, warning=FALSE}
+model2 <- nls(v ~ (phi1 * S) / (phi2 + S),
+             data = data,
+             start = list(phi1 = 3, phi2 = 0.5))
+
+summary(model2)
+ic2 <- confint(model2)  # 95% CI for the parameters
+```
+
+Así, en este caso el intervalo de confianza para $\phi_2$ és $[$`r ic2[2,1]`, `r ic2[2,2]`$]$.
+
+## Exercise 2
+
+The file `ic50.txt` contains information about **cellular growth across time** (variable `tiempo`) for three different **exposures** (`low`, `medium`, `high`).
+
+  * Create a plot comparing the three growth curves.
+
+Primero cargamos los datos y los disponemos en el formato adecuado para trabajar:
+
+```{r}
+ic50 <- read.table("ic50.txt", header = TRUE)
+
+
+ic50_long <- pivot_longer(ic50, cols = c("low", "medium", "high"),
+                          names_to = "exposure", values_to = "growth") %>%
+  mutate("exposure" = factor(exposure, levels = c("low", "medium", "high"),labels=c("low", "medium", "high")))
+
+ic50_long <- ic50_long %>% arrange(exposure, time)
+
+head(ic50_long,6)
+tail(ic50_long,6)
+```
+
+Hacemos la representación conjunta de las tres curvas de crecimiento para cada tipo de exposición:
+
+```{r growth-curves, message=FALSE}
+ggplot(ic50_long, aes(x = time, y = growth, color = exposure)) +
+  geom_line() +
+  labs(title = "Cellular Growth Curves", y = "Growth", x = "Time")
+```
+
+* Calculate the **IC50** (time at which half of the maximum cellular growth is achieved) for each exposure using the model you consider appropriate. Assess whether there are statistically significant differences.
+
+Se pide que estimemos la mediana IC50 que con la estimación parametrizada por la función SSlogis suponiendo que vamos a trabajar con el modelo logistico de crecimiento es $\hat \phi_2 = \dfrac{\hat \theta_2}{\hat \theta_3}$. En consecuencia, primero estimamos un modelo para cada exposición:
+
+```{r fit-models-ic50}
+# logistic model fit per exposure group
+mod.list <- nlsList(growth ~ SSlogis(time, phi1, phi2, phi3)|exposure,
+                     data=ic50_long, pool=FALSE)
+
+summary(mod.list)
+```
+
+Ahora obtenemos los coeficientes del modelo:
+
+```{r}
+phis <- unlist(lapply(mod.list, coef))
+phis
+```
+
+Y su matriz de varianzas y covarianzas:
+
+```{r}
+vars <- lapply(mod.list, vcov)
+vars
+```
+
+Y además, crear la matriz de varianzas y covarianzas completa:
+
+```{r}
+zero <- matrix(0, nrow=3, ncol=3)
+var <- rbind( cbind(vars[[1]], zero, zero), cbind(zero, vars[[2]], zero), cbind(zero, zero, vars[[3]]))
+var
+```
+
+Utilizamos el método delta para obtener la estimación y el error estandar del IC50, para cada uno de los modelos:
+
+```{r}
+library(car)
+# Modelo amb exposició HIGH
+d.high <- deltaMethod(phis, "high.phi2", vcov=var)
+# Modelo amb exposició LOW
+d.low <- deltaMethod(phis, "low.phi2", vcov=var)
+# Modelo amb exposició MEDIUM
+d.medium <- deltaMethod(phis, "medium.phi2", vcov=var)
+
+# Crear la tabla
+tabla_ic50 <- data.frame(
+  Exposure = c("LOW", "MEDIUM", "HIGH"),
+  Estimate = c(d.low$Estimate, d.medium$Estimate, d.high$Estimate),
+  SE = c(d.low$SE, d.medium$SE, d.high$SE),
+  IC.lower = c(d.low$`2.5 %`, d.medium$`2.5 %`, d.high$`2.5 %`),
+  IC.upper = c(d.low$`97.5 %`, d.medium$`97.5 %`, d.high$`97.5 %`)
+)
+
+# Mostrar la tabla formateada
+kable(tabla_ic50, digits = 3, caption = "Estimació de la IC50 per exposició amb intervals de confiança al 95%")
+
+```
+
+Para ver si hay diferencias siginificativas entre ellos solo tendremos que calcualar las estimacions de las diferencias a través del método delta y ver que realmente el valor 0 no está incluido en el intervalo de confianza:
+
+```{r}
+# Comparación high-low
+deltaMethod(phis, "low.phi2 - high.phi2", vcov=var)
+deltaMethod(phis, "low.phi2 - medium.phi2", vcov=var)
+deltaMethod(phis, "medium.phi2 - high.phi2", vcov=var)
+```
+
+Com en ninguno de los casos, el valor 0 no pertenece dentro de los intervalos de confianza, no hay evidència estadísitca suficiente para un nivel de confiança del $95\%$. Así que los diferentes grupos tienen estimaciones del IC50 estadísticamente diferentes.
+
+
+* Create a plot with **observed vs. predicted values** to verify the model fit.
+
+```{r}
+# Añadir predicciones al data frame original
+ic50_long$pred <- predict(mod.list)
+
+# Graficar observados vs predichos
+library(ggplot2)
+
+ggplot(ic50_long, aes(x = time)) +
+  geom_point(aes(y = growth, color = exposure), alpha = 0.6) +
+  geom_line(aes(y = pred, color = exposure), linewidth = 1.1, linetype = "solid") +
+  labs(title = "Observed vs Predicted Growth by Exposure",
+       x = "Time",
+       y = "Growth",
+       color = "Exposure") +
+  theme_minimal()
+
+```
+
+
+
+* Answer: **Which type of exposure has the larger growth rate?**
+
+En el modelo:
+
+$$
+y(x) = \frac{\phi_1}{1 + \exp\left(\frac{\phi_2 - x}{\phi_3}\right)}
+$$
+
+  * $\phi_3$ controla la pendiente de la curva logística.
+  * Una pendiente más pronunciada (crecimiento más rápido) implica valores más pequeño de $\phi_3$.
+  * Por tanto: menor $\phi_3 \rightarrow$ mayor tasa de crecimiento
+
+
+Por tanto, extraemos los coefcienties de $\phi_3$:
+
+```{r}
+# Extraer phi3 por grupo
+phi3 <- sapply(mod.list, function(mod) coef(mod)["phi3"])
+phi3
+```
+
+Esto devuelve un vector con los valores de `phi3` para `"low"`, `"medium"` y `"high"`.
+
+```{r, echo=FALSE}
+baix <- which.min(phi3) # grupo con mayor tasa de crecimiento (pendiente más empinada)
+```
+
+Así, el grupo con mayor tasa de crecimiento celular (pendientes más inclinado, és decir, valor más bajo para $phi_3$) es `r baix %>% names``
+
+```{r}
+# Crear tabla con phi3
+data.frame(
+  Exposure = names(phi3),
+  GrowthRateParameter_phi3 = phi3
+) %>%
+  arrange(GrowthRateParameter_phi3) %>%
+  kable(digits = 3, caption = "Comparació del paràmetre de pendent (phi3) per exposició")
+```
+
+
